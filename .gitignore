@@ -1,0 +1,8 @@
+*.pth
+*.pt
+*.bin
+*.ckpt
+*.h5
+outputs/
+checkpoints/
+runs/
