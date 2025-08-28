@@ -1,0 +1,9 @@
+{
+  "rows": 2146,
+  "gene_fix_ok": 2146,
+  "gene_fix_bad": 0,
+  "notes": [
+    "e1_text 现在应该是标准化后的基因符号（POLG, W748S 等）",
+    "e2_text 是清洗后的 HPO 短语"
+  ]
+}

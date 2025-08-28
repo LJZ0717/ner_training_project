@@ -1,0 +1,35 @@
+entities:
+  - HPO_TERM
+  - GENE
+  - VARIANT
+
+relations:
+  - name: Causes
+    directional: true
+    head_types:
+      - GENE
+      - VARIANT
+    tail_types:
+      - HPO_TERM
+
+  - name: AssociatedWith
+    directional: true
+    head_types:
+      - GENE
+      - VARIANT
+    tail_types:
+      - HPO_TERM
+
+  - name: NoRelation
+    directional: false
+    head_types:
+      - HPO_TERM
+      - GENE
+      - VARIANT
+    tail_types:
+      - HPO_TERM
+      - GENE
+      - VARIANT
+
+ignore_entity_types:
+  - PATIENT
