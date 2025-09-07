@@ -1,16 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Train_for_gold.py — BioBERT 二分类 (NoRelation / HasRelation)
+Train_for_gold.py — BioBERT binary classification (NoRelation / HasRelation)
 
-- 统一把 Causes / AssociatedWith 合并为 HasRelation
-- 增加 [E1][/E1][E2][/E2] 特殊标记并 resize embeddings
-- 可选正类上采样(POS_OVERSAMPLE)
-- 类权重 + Focal Loss(正类可额外 Boost)
-- 分组切分(doc_id / group_id / pmid / file_id)
-- 兼容新旧 transformers:
-  * 不使用 evaluation_strategy/save_strategy(老版)
-  * compute_loss 接受 **kwargs(新版会传 num_items_in_batch)
-  * dataloader_pin_memory=False 消除无加速器 pinned memory 警告
+- Unified Causes / AssociatedWith into HasRelation
+- Added [E1][/E1][E2][/E2] special tags and resized embeddings
+- Optional positive class upsampling (POS_OVERSAMPLE)
+- Class weights + Focal Loss (positive class can be boosted)
+- Grouping (doc_id / group_id / pmid / file_id)
 """
 
 import os
@@ -37,7 +33,7 @@ from transformers import (
 class CFG:
     SEED = 42
     MODEL_NAME = "dmis-lab/biobert-base-cased-v1.1"
-    # 建议保持绝对路径，避免找不到文件
+    
     DATA_CSV = r"C:\Users\Administrator\Desktop\Project\RE(3)\re_pairs_gold.csv"
 
     MAX_LEN = 256
@@ -50,15 +46,15 @@ class CFG:
     HEAD_TYPES = {"GENE", "VARIANT", "GENE_VARIANT"}
     TAIL_TYPE = "HPO_TERM"
 
-    # 仅对正类 HasRelation 生效
-    POS_OVERSAMPLE = 1.0      # >1 开启轻度上采样，例如 1.2 / 1.5
+    # Only valid for positive class HasRelation
+    POS_OVERSAMPLE = 1.0      # >1 turns on mild upsampling
     USE_FOCAL = True
     FOCAL_GAMMA = 1.5
-    POS_BOOST = 1.2           # 类频权重基础上对正类再乘一个系数
+    POS_BOOST = 1.2           
 
     GROUP_COL_CANDIDATES = ["doc_id", "group_id", "pmid", "file_id"]
 
-# 二分类标签
+
 SCHEMA = ["NoRelation", "HasRelation"]
 LABEL2ID: Dict[str, int] = {l: i for i, l in enumerate(SCHEMA)}
 ID2LABEL: Dict[int, str] = {i: l for l, i in LABEL2ID.items()}
@@ -85,9 +81,9 @@ class REDataset(Dataset):
         self.max_len = max_len
 
         if "text_marked" not in self.df.columns:
-            raise ValueError("需要列 text_marked(包含 [E1]…[/E1] [E2]…[/E2])")
+            raise ValueError("Requires column text_marked (containing [E1]…[/E1] [E2]…[/E2])")
         if "relation" not in self.df.columns:
-            raise ValueError("需要列 relation。")
+            raise ValueError("Column relation is required.")
 
         self.texts = self.df["text_marked"].astype(str).tolist()
         self.labels = [LABEL2ID[x] for x in self.df["relation"].tolist()]
@@ -138,7 +134,7 @@ class LossTrainer(Trainer):
         self.criterion = FocalLoss(self.class_weights, self.focal_gamma) if self.use_focal \
                          else nn.CrossEntropyLoss(weight=self.class_weights)
 
-    # 关键：允许 **kwargs 兼容新版 transformers
+    
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         outputs = model(**inputs)
@@ -156,20 +152,20 @@ def main():
         raise FileNotFoundError(f"找不到数据文件: {cfg.DATA_CSV}")
     df = pd.read_csv(cfg.DATA_CSV)
 
-    # 2) 统一到二分类标签空间 + 头尾过滤
+    # 2) Unify to binary label space + head and tail filtering
     need_cols = ["text_marked", "relation", "e1_type", "e2_type"]
     for c in need_cols:
         if c not in df.columns:
             raise ValueError(f"缺少必要列: {c}")
 
-    # 保险：把旧的 Causes/AssociatedWith 合并为 HasRelation
+    # Merge old Causes/AssociatedWith into HasRelation
     df["relation"] = df["relation"].replace({"Causes": "HasRelation", "AssociatedWith": "HasRelation"})
     df = df[(df["e1_type"].isin(cfg.HEAD_TYPES)) & (df["e2_type"] == cfg.TAIL_TYPE)].copy()
     df = df[df["relation"].isin(SCHEMA)].copy()
     if len(df) == 0:
-        raise ValueError("过滤后数据量为 0,请检查列名与取值。")
+        raise ValueError("The amount of data after filtering is 0. Please check the column names and values.")
 
-    # 3) 分组切分
+    # 3) Grouping
     group_col = pick_group_col(df, cfg.GROUP_COL_CANDIDATES)
     if group_col is None:
         train_df, dev_df = train_test_split(
@@ -185,7 +181,7 @@ def main():
     print("Label dist (train):\n", train_df["relation"].value_counts())
     print("Label dist (dev):\n",   dev_df["relation"].value_counts())
 
-    # 4) 正类上采样（可选）
+    # 4) 
     if cfg.POS_OVERSAMPLE > 1.0:
         pos_mask = train_df["relation"] == "HasRelation"
         if pos_mask.any():
@@ -216,7 +212,7 @@ def main():
     if added > 0:
         model.resize_token_embeddings(len(tokenizer))
 
-    # 8) 类权重（按训练集频率的逆 + 正类 Boost）
+    # 8) Class weight
     train_labels = np.array([LABEL2ID[x] for x in train_df["relation"]], dtype=np.int64)
     counts = np.bincount(train_labels, minlength=NUM_LABELS).astype(np.float32)
     inv = 1.0 / np.clip(counts, 1.0, None)
@@ -225,7 +221,7 @@ def main():
     class_weights = torch.tensor(inv, dtype=torch.float32)
     print("Class weights:", class_weights.tolist())
 
-    # 9) training args（兼容 & 关闭 pin_memory 警告）
+    # 9) training args
     args = TrainingArguments(
         output_dir="re_runs_bin",
         num_train_epochs=cfg.EPOCHS,
@@ -276,7 +272,7 @@ def main():
         eval_out = trainer.evaluate(eval_dataset=dev_ds)
         print("Eval metrics:", eval_out)
     except Exception as e:
-        print("evaluate() 兼容性问题，跳过自动指标。", e)
+        print("evaluate() Compatibility issues, skip automatic indicators.", e)
 
     # 14) predict & reports
     preds = trainer.predict(dev_ds)
@@ -312,7 +308,7 @@ def main():
     save_dir = "re_best_model_bin"
     trainer.save_model(save_dir)
     tokenizer.save_pretrained(save_dir)
-    # 可选：保存 NoRelation 偏置（若后续要用银集打分脚本）
+
     with open(os.path.join(save_dir, "nr_bias.json"), "w", encoding="utf-8") as f:
         import json
         json.dump({"no_relation_logit_bias": 0.8}, f, ensure_ascii=False, indent=2)

@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-将ChatGPT生成的JSONL文件整合并转换为BIO格式
-"""
-
 import json
 import os
 import re
@@ -10,22 +5,22 @@ from typing import List, Dict, Tuple
 
 
 def is_punctuation(token: str) -> bool:
-    """判断token是否为标点符号"""
+    """Determine whether the token is a punctuation mark"""
     return re.fullmatch(r'[^\w\s]', token) is not None
 
 
 def load_jsonl_files(directory: str) -> List[Dict]:
-    """加载指定目录下的所有JSONL文件"""
+    """Load all JSONL files in the specified directory"""
     all_data = []
     jsonl_files = [f for f in os.listdir(directory) if f.endswith('.jsonl')]
     
-    print(f"找到 {len(jsonl_files)} 个JSONL文件:")
+    print(f"find {len(jsonl_files)} JSONL documents:")
     for filename in sorted(jsonl_files):
         print(f"  - {filename}")
     
     for filename in sorted(jsonl_files):
         filepath = os.path.join(directory, filename)
-        print(f"\n正在处理: {filename}")
+        print(f"\nProcessing: {filename}")
         
         with open(filepath, 'r', encoding='utf-8') as f:
             file_data = []
@@ -36,22 +31,22 @@ def load_jsonl_files(directory: str) -> List[Dict]:
                         data = json.loads(line)
                         file_data.append(data)
                     except json.JSONDecodeError as e:
-                        print(f"  警告: 第{line_num}行JSON解析错误: {e}")
+                        print(f"  Warning: JSON parsing error at line {line_num}: {e}")
             
-            print(f"  加载了 {len(file_data)} 条记录")
+            print(f"  Warning: JSON parsing error at line {line_num} {len(file_data)} 条记录")
             all_data.extend(file_data)
     
-    print(f"\n总共加载了 {len(all_data)} 条记录")
+    print(f"\nTotal loaded {len(all_data)} Records")
     return all_data
 
 
 def tokenize_text(text: str) -> List[Tuple[str, int, int]]:
     """
-    对文本进行分词，返回(token, start_pos, end_pos)的列表
-    使用简单的空格和标点分词
+   Tokenizes the text and returns a list of (token, start_pos, end_pos)
+Tokenizes using simple spaces and punctuation
     """
     tokens = []
-    # 使用正则表达式分词，保留标点符号
+    # Use regular expressions to segment words and retain punctuation
     pattern = r'\w+|[^\w\s]'
     
     for match in re.finditer(pattern, text):
@@ -65,58 +60,58 @@ def tokenize_text(text: str) -> List[Tuple[str, int, int]]:
 
 def convert_to_bio(text: str, spans: List[Dict]) -> List[Tuple[str, str]]:
     """
-    将文本和标注信息转换为BIO格式
+    Convert text and annotation information into BIO format
     
     Args:
-        text: 原文本
-        spans: 标注信息列表，每个包含start, end, label
+        text: original text
+        spans: a list of annotation information, each containing start, end, label
     
     Returns:
-        (token, label)对的列表
+        A list of (token, label) pairs
     """
-    # 分词
+    
     tokens = tokenize_text(text)
     
-    # 初始化所有token的标签为'O'
+    # Initialize all token labels to 'O'
     token_labels = ['O'] * len(tokens)
     
-    # 为每个span分配标签
+    # Assign a label to each span
     for span in spans:
         start_char = span['start']
         end_char = span['end']
         label = span['label']
         
-        # 找到与span重叠的tokens
+        # Find tokens that overlap with span
         first_token_idx = None
         last_token_idx = None
         
         for i, (token, token_start, token_end) in enumerate(tokens):
-            # 检查token是否与span有重叠
+            # Check if token overlaps with span
             if token_end > start_char and token_start < end_char:
                 if first_token_idx is None:
                     first_token_idx = i
                 last_token_idx = i
         
-        # 分配BIO标签
+        # Assign BIO labels
         if first_token_idx is not None:
-            # 第一个token用B-标签
+            # The first token is labeled with B-
             token_labels[first_token_idx] = f'B-{label}'
-            # 后续token用I-标签
+            # Subsequent tokens use I-tags
             for i in range(first_token_idx + 1, last_token_idx + 1):
                 token_labels[i] = f'I-{label}'
     
-    # 返回(token, label)对，但过滤掉标点符号
+    # Return (token, label) pairs, but filter out punctuation
     result = []
     for (token, _, _), label in zip(tokens, token_labels):
-        if not is_punctuation(token):  # 只保留非标点符号的token
+        if not is_punctuation(token): # Only keep non-punctuation tokens
             result.append((token, label))
     
     return result
 
 
 def save_bio_format(data: List[Dict], output_file: str):
-    """将数据保存为BIO格式"""
-    print(f"\n正在转换为BIO格式并保存到: {output_file}")
+    """Save data in BIO format"""
+    print(f"\nConverting to BIO format and saving to: {output_file}")
     
     with open(output_file, 'w', encoding='utf-8') as f:
         total_sentences = len(data)
@@ -124,64 +119,64 @@ def save_bio_format(data: List[Dict], output_file: str):
         
         for i, item in enumerate(data, 1):
             if i % 100 == 0 or i == total_sentences:
-                print(f"  处理进度: {i}/{total_sentences}")
+                print(f"  Processing progress: {i}/{total_sentences}")
             
             text = item['text']
             spans = item.get('spans', [])
             
-            # 转换为BIO格式
+            # Convert to BIO format
             bio_tokens = convert_to_bio(text, spans)
             
-            # 写入文件
+            # Write to file
             for token, label in bio_tokens:
                 f.write(f"{token} {label}\n")
                 total_tokens += 1
             
-            # 句子间用空行分隔
+            
             f.write("\n")
         
-        print(f"  转换完成: {total_sentences} 个句子, {total_tokens} 个token")
+        print(f"  Conversion Completed: {total_sentences} sentences, {total_tokens} token")
 
 
 def main():
-    """主函数"""
-    # 设置路径
+    """main"""
+    
     input_dir = "silver_data/Chatgpt/JSONL"
     output_file = "chatgpt_integrated_bio_no_punctuation.txt"
     
     print("=" * 60)
-    print("ChatGPT JSONL文件整合和BIO格式转换工具")
+    print("ChatGPT JSONL file integration and BIO format conversion tool")
     print("=" * 60)
     
-    # 检查输入目录
+    # Check input directory
     if not os.path.exists(input_dir):
-        print(f"错误: 输入目录不存在: {input_dir}")
+        print(f"Error: Input directory does not exist: {input_dir}")
         return
     
-    # 加载所有JSONL文件
+   # Load all JSONL files
     all_data = load_jsonl_files(input_dir)
     
     if not all_data:
-        print("错误: 没有找到有效的数据")
+        print("Error: No valid data found")
         return
     
-    # 转换为BIO格式并保存
+    # Convert to BIO format and save
     save_bio_format(all_data, output_file)
     
-    print(f"\n处理完成! 结果已保存到: {output_file}")
+    print(f"\nProcessing completed! Results saved to: {output_file}")
     
-    # 显示一些统计信息
-    print("\n统计信息:")
-    print(f"  总记录数: {len(all_data)}")
+    # Display some statistics
+    print("\nStatistics:")
+    print(f"  Total number of records: {len(all_data)}")
     
-    # 统计标签类型
+    # Statistics Tag Type
     label_counts = {}
     for item in all_data:
         for span in item.get('spans', []):
             label = span['label']
             label_counts[label] = label_counts.get(label, 0) + 1
     
-    print(f"  标签类型: {len(label_counts)}")
+    print(f"  Tag Type: {len(label_counts)}")
     for label, count in sorted(label_counts.items()):
         print(f"    {label}: {count}")
 

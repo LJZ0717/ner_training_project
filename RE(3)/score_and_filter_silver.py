@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 score_and_filter_silver_bin.py —— 二分类 (NoRelation / HasRelation)
-- 读取 ./silver.jsonl
-- 构造候选句（同句 + 相邻句窗口）
-- 用 ./re_best_model_bin/ 打分
-- 导出：
-  - re_pairs_silver_scored_bin.csv(全量打分)
-  - re_pairs_silver_kept_bin.csv(筛选后的银样本，仅 HasRelation,带 weight)
+- Read ./silver.jsonl
+- 构Create candidate sentences (same sentence + adjacent sentence window)
+- Scoring with ./re_best_model_bin/
+- Export:
+  - re_pairs_silver_scored_bin.csv(Full score)
+  - re_pairs_silver_kept_bin.csv(Screened silver sample, only HasRelation, with weight)
 """
 
 import re, json
@@ -17,18 +17,17 @@ import pandas as pd
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-# ========= 相对路径 =========
 BASE = Path(__file__).resolve().parent
 INPUT_JSONL = BASE / "silver.jsonl"
 MODEL_DIR   = BASE / "re_best_model_bin"
 OUT_SCORED  = BASE / "re_pairs_silver_scored_bin.csv"
 OUT_KEPT    = BASE / "re_pairs_silver_kept_bin.csv"
 
-# ========= 超参（可按需要调整）=========
+# ========= Parameters=========
 MAX_LEN      = 256
 BATCH_SIZE   = 64
-WINDOW_SENT  = 4     # 同句 + 相邻句窗口（±W）
-# 初始阈值与边际（pos_prob: HasRelation 概率；margin: pos_prob - p_NoRel）
+WINDOW_SENT  = 4     
+# Initial threshold and margin (pos_prob: HasRelation probability; margin: pos_prob - p_NoRel)
 THR_POS      = 0.55
 THR_MARGIN   = 0.00
 RELAX_SCHEDULE = [
@@ -36,18 +35,18 @@ RELAX_SCHEDULE = [
     (0.52, -0.02),
     (0.50, -0.05),
 ]
-# 兜底：如果还筛不到，则从非 NoRelation 的样本里取 Top-K（按 margin 排序）
-TOPK_FALLBACK_FRAC = 0.05  # 前 5%
-TOPK_MIN = 80              # 至少 80 条（不够就有多少取多少）
+# If no results are found, then Top-K samples from non-NoRelation samples are taken (sorted by margin)
+TOPK_FALLBACK_FRAC = 0.05  # Top 5%
+TOPK_MIN = 80              
 
-# 若模型目录有 nr_bias.json，就对 NoRelation logit 做惩罚（更容易保留正类）
+# If the model directory has nr_bias.json, then penalize NoRelation logit
 NR_BIAS_FALLBACK = 0.80
 
-# 实体类型（与你的转换脚本一致）
+# Entity type 
 HEAD_TYPES = {"GENE", "VARIANT", "GENE_VARIANT"}
 TAIL_TYPE  = "HPO_TERM"
 
-# ========= 小工具 =========
+
 def sent_tokenize(text: str) -> List[Tuple[int,int,str]]:
     out=[]; start=0
     for m in re.finditer(r"[\.?!]\s+|\n+", text):
@@ -127,36 +126,36 @@ def collect_pairs(jsonl_path: Path, W: int) -> pd.DataFrame:
                            inplace=True, ignore_index=True)
     return df
 
-# ========= 主流程 =========
+# ========= main =========
 def main():
-    print("工作目录：", BASE)
-    if not INPUT_JSONL.exists(): raise FileNotFoundError(f"找不到 silver.jsonl：{INPUT_JSONL}")
-    if not MODEL_DIR.exists():   raise FileNotFoundError(f"找不到模型目录：{MODEL_DIR}")
+    print("Working Directory：", BASE)
+    if not INPUT_JSONL.exists(): raise FileNotFoundError(f"silver.jsonl not found:{INPUT_JSONL}")
+    if not MODEL_DIR.exists():   raise FileNotFoundError(f"Model directory not found:{MODEL_DIR}")
 
-    # 1) 收集候选
+    # 1) Collect candidates
     df = collect_pairs(INPUT_JSONL, WINDOW_SENT)
     if df.empty:
-        print("未构造出候选对；可把 WINDOW_SENT 调大（如 5）。"); return
-    print("候选数：", len(df))
+        print("No candidate pair was constructed; you can increase WINDOW_SENT."); return
+    print("Number of candidates：", len(df))
 
-    # 2) 加载模型
+    # 2) Loading the model
     tok = AutoTokenizer.from_pretrained(str(MODEL_DIR), use_fast=True)
     tok.add_special_tokens({"additional_special_tokens":["[E1]","[/E1]","[E2]","[/E2]"]})
     mdl = AutoModelForSequenceClassification.from_pretrained(str(MODEL_DIR)).eval().to("cpu")
 
-    # 读取 nr_bias.json（如无则用兜底）
+    # Read nr_bias.json (use a fallback if it is missing)
     nr_bias = NR_BIAS_FALLBACK
     bp = MODEL_DIR / "nr_bias.json"
     if bp.exists():
         try:
             nr_bias = float(json.load(open(bp,"r",encoding="utf-8")).get("no_relation_logit_bias", nr_bias))
-            print(f"应用 NoRelation 偏置：{nr_bias:.2f}")
+            print(f"Applying a NoRelation bias:{nr_bias:.2f}")
         except:
-            print(f"读取 nr_bias.json 失败，使用兜底偏置：{nr_bias:.2f}")
+            print(f"Failed to read nr_bias.json, using fallback bias:{nr_bias:.2f}")
     else:
-        print(f"未找到 nr_bias.json，使用兜底偏置：{nr_bias:.2f}")
+        print(f"nr_bias.json not found, using fallback bias:{nr_bias:.2f}")
 
-    # 3) 批量推理
+    # 3) Batch Inference
     texts=df["text_marked"].astype(str).tolist()
     logits_all=[]
     with torch.no_grad():
@@ -165,8 +164,8 @@ def main():
                     max_length=MAX_LEN, return_tensors="pt")
             out=mdl(**enc)
             lg=out.logits.detach().cpu().numpy()
-            # 二分类：[0]=NoRelation, [1]=HasRelation
-            lg[:,0] -= nr_bias  # 压低 NoRelation
+            # Two categories: [0]=NoRelation, [1]=HasRelation
+            lg[:,0] -= nr_bias  
             logits_all.append(lg)
     logits=np.concatenate(logits_all, axis=0)
     probs=torch.softmax(torch.tensor(logits), dim=-1).numpy()
@@ -174,39 +173,39 @@ def main():
     p_pos= probs[:,1]
     margin = p_pos - p_nr
 
-    # 4) 导出全量打分
+    # 4)Export full score
     df_s = df.copy()
     df_s["p_NoRel"]  = p_nr
     df_s["p_HasRel"] = p_pos
     df_s["margin"]   = margin
     df_s["pred"]     = (p_pos >= 0.5).astype(int)
     df_s.to_csv(OUT_SCORED, index=False, encoding="utf-8-sig")
-    print(f"已保存全量打分：{OUT_SCORED} rows={len(df_s)}")
+    print(f"All ratings saved:{OUT_SCORED} rows={len(df_s)}")
     print(df_s["pred"].value_counts().rename({0:"NoRel",1:"HasRel"}))
 
-    # 5) 按阈值筛选 + 自适应降阈
+    # 5) Filter by threshold + adaptive threshold reduction
     kept=None
     for pos_th, mar_th in RELAX_SCHEDULE:
         mask = (df_s["p_HasRel"]>=pos_th) & (df_s["margin"]>=mar_th)
         cand = df_s[mask].copy()
         if len(cand)>0:
-            print(f"采用阈值 pos>={pos_th:.2f}, margin>={mar_th:.2f} → kept={len(cand)}")
+            print(f"Using threshold pos>={pos_th:.2f}, margin>={mar_th:.2f} → kept={len(cand)}")
             kept = cand; break
         else:
-            print(f"阈值 pos>={pos_th:.2f}, margin>={mar_th:.2f} 下为 0，继续放宽…")
+            print(f"Thresholdpos>={pos_th:.2f}, margin>={mar_th:.2f} is 0, continue to relax...")
 
-    # 兜底：从非 NoRel 的样本中按 margin 取 Top-K
+    # Take Top-K by margin from non-NoRel samples
     if kept is None or len(kept)==0:
         pos = df_s[df_s["p_HasRel"]>df_s["p_NoRel"]].copy()
         if len(pos)>0:
             K = max(int(len(pos)*TOPK_FALLBACK_FRAC), TOPK_MIN)
             kept = pos.sort_values(["margin","p_HasRel"], ascending=False).head(K).copy()
-            print(f"Top-K 兜底：取前 {len(kept)} 条正类候选。")
+            print(f"Top-K Backstop: Take the front {len(kept)} the positive category.")
         else:
             kept = df_s.iloc[0:0].copy()
-            print("仍为 0 条；建议调大 NR_BIAS_FALLBACK 或 WINDOW_SENT。")
+            print("Still 0 bars; recommend to increase NR_BIAS_FALLBACK or WINDOW_SENT.")
 
-    # 6) 导出训练所需列（全标为 HasRelation）
+    # 6) Export the columns required for training (all labeled HasRelation)
     kept["relation"]  = "HasRelation"
     kept["is_silver"] = 1
     kept["weight"]    = 0.5
@@ -217,7 +216,7 @@ def main():
             "is_silver","weight"]
     kept = kept[cols].drop_duplicates(ignore_index=True)
     kept.to_csv(OUT_KEPT, index=False, encoding="utf-8-sig")
-    print(f"已保存筛选结果：{OUT_KEPT} rows={len(kept)}")
+    print(f"Saved filter results:{OUT_KEPT} rows={len(kept)}")
     if len(kept)>0:
         print(kept["relation"].value_counts())
 

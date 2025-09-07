@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-train_for_gold_silver.py —— BioBERT 二分类 (NoRelation / HasRelation)
-- 读取 gold 与(可选)silver,一起训练
-- 银样本可设置样本级权重(CSV里有 weight 列则使用；否则用 CFG.SILVER_WEIGHT)
-- Tokenizer 增加 [E1][/E1][E2][/E2]
-- 类权重 + FocalLoss(instance-level 加权)
-- 分组切分(doc_id / group_id / pmid / file_id)
-- 兼容新旧 transformers:compute_loss(**kwargs) + 关闭 pinned memory 警告
-- 训练后保存模型到 re_best_model_bin_mix/，并写出 nr_bias.json(默认 0.8)
+train_for_gold_silver.py — BioBERT binary classification (NoRelation / HasRelation)
+- Reads gold and silver and trains them together
+- Silver samples can now set sample-level weights
+- Tokenizer adds [E1][/E1][E2][/E2]
+- Class weights + FocalLoss (instance-level weighting)
+- Group splitting (doc_id / group_id / pmid / file_id)
+- After training, saves the model to re_best_model_bin_mix/ and writes nr_bias.json (default 0.8)
 """
 
 import os
@@ -36,12 +35,12 @@ class CFG:
     SEED = 42
     MODEL_NAME = "dmis-lab/biobert-base-cased-v1.1"
 
-    # 路径（默认读取脚本同目录）
+    
     BASE = Path(__file__).resolve().parent
     GOLD_CSV   = str((BASE / "re_pairs_gold.csv").resolve())
     SILVER_CSV = str((BASE / "re_pairs_silver_kept_bin.csv").resolve())   # 没有可设为 None
 
-    # 若 silver CSV 里没有 weight 列，则使用该默认权重
+    
     SILVER_WEIGHT = 0.5
     GOLD_WEIGHT   = 1.0
 
@@ -52,18 +51,18 @@ class CFG:
     LR = 2e-5
     WEIGHT_DECAY = 0.01
 
-    # 轻度照顾正类（HasRelation）
-    POS_OVERSAMPLE = 1.0    # >1 开启上采样（如 1.2/1.5）
+    
+    POS_OVERSAMPLE = 1.0    
     USE_FOCAL   = True
     FOCAL_GAMMA = 1.5
-    POS_BOOST   = 1.2       # 类频权重基础上对正类再乘系数
+    POS_BOOST   = 1.2       
 
     HEAD_TYPES = {"GENE", "VARIANT", "GENE_VARIANT"}
     TAIL_TYPE  = "HPO_TERM"
 
     GROUP_COL_CANDIDATES = ["doc_id", "group_id", "pmid", "file_id"]
 
-# 二分类标签
+# Binary classification labels
 SCHEMA = ["NoRelation", "HasRelation"]
 LABEL2ID: Dict[str, int] = {l: i for i, l in enumerate(SCHEMA)}
 ID2LABEL: Dict[int, str] = {i: l for l, i in LABEL2ID.items()}
@@ -91,7 +90,7 @@ class REDataset(Dataset):
 
         for col in ["text_marked", "relation"]:
             if col not in self.df.columns:
-                raise ValueError(f"需要列 {col}。")
+                raise ValueError(f"Required columns {col}。")
         if "sample_weight" not in self.df.columns:
             self.df["sample_weight"] = 1.0
 
@@ -115,7 +114,7 @@ class REDataset(Dataset):
         item["sample_weight"] = torch.tensor(self.weights[idx], dtype=torch.float32)
         return item
 
-# ======================= Loss（支持 instance-level 权重） =======================
+# ======================= Loss =======================
 class FocalLoss(nn.Module):
     def __init__(self, weight: Optional[torch.Tensor] = None, gamma: float = 2.0):
         super().__init__()
@@ -124,7 +123,7 @@ class FocalLoss(nn.Module):
         self.ce = nn.CrossEntropyLoss(weight=weight, reduction="none")
 
     def forward(self, logits, target):
-        # 返回逐样本损失向量，外部再加权平均
+        # Returns the per-sample loss vector, externally reweighted averaged
         ce = self.ce(logits, target)  # [B]
         with torch.no_grad():
             pt = torch.softmax(logits, dim=-1).gather(1, target.unsqueeze(1)).squeeze(1)  # [B]
@@ -143,14 +142,14 @@ class LossTrainer(Trainer):
         else:
             self.loss_fn = nn.CrossEntropyLoss(weight=self.class_weights, reduction="none")
 
-    # 允许 **kwargs 以兼容新版 transformers（会额外传 num_items_in_batch）
+    
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         sample_weight = inputs.pop("sample_weight", None)  # [B] or None
         outputs = model(**inputs)
         logits = outputs.logits
 
-        # 得到逐样本损失
+        # Get the sample-by-sample loss
         if self.use_focal:
             loss_vec = self.loss_fn(logits, labels)  # [B]
         else:
@@ -171,13 +170,13 @@ def main():
     set_all_seeds(cfg.SEED)
 
     # 1) load gold
-    assert os.path.exists(cfg.GOLD_CSV), f"找不到 GOLD_CSV: {cfg.GOLD_CSV}"
+    assert os.path.exists(cfg.GOLD_CSV), f"GOLD_CSV not found: {cfg.GOLD_CSV}"
     gold = pd.read_csv(cfg.GOLD_CSV)
     need_cols = ["doc_id","sentence","text_marked",
                  "e1_text","e1_type","e1_start","e1_end",
                  "e2_text","e2_type","e2_start","e2_end","relation"]
     gold = gold[need_cols].copy()
-    # 统一二分类
+    #Unified binary classification
     gold["relation"] = gold["relation"].replace({"Causes":"HasRelation","AssociatedWith":"HasRelation"})
     gold = gold[gold["relation"].isin(SCHEMA)].copy()
     gold["sample_weight"] = cfg.GOLD_WEIGHT
@@ -200,7 +199,7 @@ def main():
 
     # 3) filter heads/tails & sanity
     df = df[(df["e1_type"].isin(cfg.HEAD_TYPES)) & (df["e2_type"] == cfg.TAIL_TYPE)].copy()
-    assert len(df) > 0, "过滤后样本为 0。"
+    assert len(df) > 0, "The sample after filtering is 0."
 
     # 4) split (group-aware if possible)
     group_col = pick_group_col(df, cfg.GROUP_COL_CANDIDATES)
@@ -247,7 +246,7 @@ def main():
     if added > 0:
         model.resize_token_embeddings(len(tokenizer))
 
-    # 9) class weights（按训练集频率逆 + 正类Boost）
+    # 9) class weights (inverse training set frequency + positive class Boost)
     train_labels = np.array([LABEL2ID[x] for x in train_df["relation"]], dtype=np.int64)
     counts = np.bincount(train_labels, minlength=NUM_LABELS).astype(np.float32)
     inv = 1.0 / np.clip(counts, 1.0, None)
@@ -307,7 +306,7 @@ def main():
         eval_out = trainer.evaluate(eval_dataset=dev_ds)
         print("Eval metrics:", eval_out)
     except Exception as e:
-        print("evaluate() 兼容性问题，跳过自动指标。", e)
+        print("evaluate() Compatibility issues, skip automatic indicators.", e)
 
     # 15) predict & reports
     preds = trainer.predict(dev_ds)

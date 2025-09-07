@@ -39,10 +39,10 @@ class CFG:
 
     BASE = Path(__file__).resolve().parent
     GOLD_CSV   = str((BASE / "re_pairs_gold.csv").resolve())
-    SILVER_CSV = str((BASE / "re_pairs_silver_kept_bin.csv").resolve())  # 没有就让它不存在即可
+    SILVER_CSV = str((BASE / "re_pairs_silver_kept_bin.csv").resolve())  
 
     GOLD_WEIGHT   = 1.0
-    SILVER_WEIGHT = 0.5   # 若银 CSV 里带 weight 列则优先使用该列
+    SILVER_WEIGHT = 0.5   
 
     MAX_LEN = 256
     TRAIN_BATCH = 8
@@ -50,18 +50,18 @@ class CFG:
     LR = 2e-5
     WEIGHT_DECAY = 0.01
 
-    # 正类轻度照顾（最终版保持与验证版一致即可）
-    POS_OVERSAMPLE = 1.0   # >1 开启轻度上采样（如 1.2/1.5）
+    
+    POS_OVERSAMPLE = 1.0   
     USE_FOCAL   = True
     FOCAL_GAMMA = 1.5
-    POS_BOOST   = 1.2      # 类频权重基础上正类再乘系数
+    POS_BOOST   = 1.2      
 
     HEAD_TYPES = {"GENE", "VARIANT", "GENE_VARIANT"}
     TAIL_TYPE  = "HPO_TERM"
 
     SAVE_DIR = str((BASE / "re_best_model_final").resolve())
 
-# 标签空间（二分类）
+# Label space (binary classification)
 SCHEMA = ["NoRelation", "HasRelation"]
 LABEL2ID: Dict[str, int] = {l: i for i, l in enumerate(SCHEMA)}
 ID2LABEL: Dict[int, str] = {i: l for l, i in LABEL2ID.items()}
@@ -84,7 +84,7 @@ class REDataset(Dataset):
         need = ["text_marked", "relation"]
         for c in need:
             if c not in self.df.columns:
-                raise ValueError(f"需要列 {c}。")
+                raise ValueError(f"Required columns {c}。")
         if "sample_weight" not in self.df.columns:
             self.df["sample_weight"] = 1.0
 
@@ -108,7 +108,7 @@ class REDataset(Dataset):
         item["sample_weight"] = torch.tensor(self.weights[idx], dtype=torch.float32)
         return item
 
-# ======================= Loss（逐样本加权） =======================
+# ======================= Loss =======================
 class FocalLoss(nn.Module):
     def __init__(self, weight: Optional[torch.Tensor] = None, gamma: float = 2.0):
         super().__init__()
@@ -135,7 +135,7 @@ class LossTrainer(Trainer):
         else:
             self.loss_fn = nn.CrossEntropyLoss(weight=self.class_weights, reduction="none")
 
-    # 允许 **kwargs 兼容新版 transformers
+    
     def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         labels = inputs.pop("labels")
         sample_weight = inputs.pop("sample_weight", None)  # [B]
@@ -157,7 +157,7 @@ def main():
     cfg = CFG()
     set_all_seeds(cfg.SEED)
 
-    # 1) 读取 gold
+    # 1) Read gold
     assert os.path.exists(cfg.GOLD_CSV), f"找不到 GOLD_CSV: {cfg.GOLD_CSV}"
     gold = pd.read_csv(cfg.GOLD_CSV)
 
@@ -165,13 +165,13 @@ def main():
                  "e1_text","e1_type","e1_start","e1_end",
                  "e2_text","e2_type","e2_start","e2_end","relation"]
     gold = gold[need_cols].copy()
-    # 统一到二分类
+    # Unified to two categories
     gold["relation"] = gold["relation"].replace({"Causes":"HasRelation","AssociatedWith":"HasRelation"})
     gold = gold[(gold["e1_type"].isin(cfg.HEAD_TYPES)) & (gold["e2_type"]==cfg.TAIL_TYPE)]
     gold = gold[gold["relation"].isin(SCHEMA)].copy()
     gold["sample_weight"] = cfg.GOLD_WEIGHT
 
-    # 2) 读取（可选）silver
+    # 2) silver
     if os.path.exists(cfg.SILVER_CSV):
         silver = pd.read_csv(cfg.SILVER_CSV)
         use_cols = need_cols + [c for c in silver.columns if c in ["weight"]]
@@ -189,7 +189,7 @@ def main():
         df = gold
         print(f"Loaded gold={len(gold)} (no silver)")
 
-    # 3) 正类上采样（可选）
+    
     if cfg.POS_OVERSAMPLE > 1.0:
         pos_mask = df["relation"] == "HasRelation"
         if pos_mask.any():
@@ -218,7 +218,7 @@ def main():
     )
     model.resize_token_embeddings(len(tokenizer))
 
-    # 7) 类权重（训练集频率逆 + 正类Boost）
+    # 7) 类权重
     train_labels = np.array([LABEL2ID[x] for x in df["relation"]], dtype=np.int64)
     counts = np.bincount(train_labels, minlength=NUM_LABELS).astype(np.float32)
     inv = 1.0 / np.clip(counts, 1.0, None)
@@ -227,7 +227,7 @@ def main():
     class_weights = torch.tensor(inv, dtype=torch.float32)
     print("Class weights:", class_weights.tolist())
 
-    # 8) training args（无评估集）
+    # 8) training args
     args = TrainingArguments(
         output_dir=str(Path(cfg.BASE) / "re_runs_bin_final"),
         num_train_epochs=cfg.EPOCHS,
@@ -257,7 +257,7 @@ def main():
     save_dir.mkdir(parents=True, exist_ok=True)
     trainer.save_model(str(save_dir))
     tokenizer.save_pretrained(str(save_dir))
-    # 写入 NoRelation 偏置（供打分脚本使用）
+    
     with open(save_dir / "nr_bias.json", "w", encoding="utf-8") as f:
         import json
         json.dump({"no_relation_logit_bias": 0.8}, f, ensure_ascii=False, indent=2)

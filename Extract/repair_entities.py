@@ -1,15 +1,13 @@
-# -*- coding: utf-8 -*-
 """
 repair_entities_overwrite_v3.py
 - 所有输出放到 Extract 路径
 - 修复后的基因/HPO 直接覆盖 e1_text/e2_text
 """
-
 import os, re, json
 import pandas as pd
 from rapidfuzz import fuzz
 
-# ====== 路径配置 ======
+
 BASE      = r"C:\Users\Administrator\Desktop\Project"
 IN_PATH   = os.path.join(BASE, r"RE(3)\pred_pairs.csv")
 OUT_PATH  = os.path.join(BASE, r"Extract\pred_pairs_entities_repaired.csv")
@@ -96,7 +94,7 @@ def main():
         t_e1 = hpo_from_E1_strict(marked)   # HPO
         t_e2 = gene_from_E2_robust(marked)  # Gene
 
-        # 基因清洗：保留大写/数字
+        # Gene cleaning: keep uppercase/numbers
         tok = re.search(r"\b[A-Z0-9]{2,10}\b", t_e2 or "")
         if tok:
             gene_val = tok.group(0)
@@ -108,7 +106,7 @@ def main():
         new_e1.append(gene_val)
         new_e2.append(hpo_val)
 
-    # 覆盖原列
+    #Overwrite the original column
     df["e1_text"] = new_e1
     df["e2_text"] = new_e2
 
@@ -122,8 +120,8 @@ def main():
         "gene_fix_ok": ok_gene,
         "gene_fix_bad": bad_gene,
         "notes": [
-            "e1_text 现在应该是标准化后的基因符号（POLG, W748S 等）",
-            "e2_text 是清洗后的 HPO 短语"
+            "e1_text The gene symbols should now be normalized (POLG, W748S, etc.)",
+            "e2_text is the HPO phrase after washing"
         ]
     }
     with open(REPORT, "w", encoding="utf-8") as f:

@@ -1,11 +1,3 @@
-# -*- coding: utf-8 -*-
-# BioBERT + CRF NER — inference (hard-coded paths, robust label map parsing)
-# 输入:  C:\Users\Administrator\Desktop\Project\NER\test.txt   （每行一个段落或句子）
-# 模型:  C:\Users\Administrator\Desktop\Project\NER\best_BioBERT_model.pt
-#       (如需切到金+银模型，将 MODEL_PATH 改为 best_BioBERT_model_gold_silver.pt，
-#        并将 LABEL_MAP 改为 label_mapping_gold_silver.pt)
-# 输出:  C:\Users\Administrator\Desktop\Project\NER\ner_predictions.csv
-
 import os, sys, re, numbers
 import torch
 import torch.nn as nn
@@ -13,20 +5,20 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModel
 from torchcrf import CRF
 
-# -------- 固定路径（按需改这里） --------
+
 BASE_DIR   = r"C:\Users\Administrator\Desktop\Project\NER"
 MODEL_PATH = os.path.join(BASE_DIR, "best_BioBERT_model.pt")
 LABEL_MAP  = os.path.join(BASE_DIR, "label_mapping.pt")
 INPUT_TXT  = os.path.join(BASE_DIR, "test.txt")
 OUTPUT_CSV = os.path.join(BASE_DIR, "ner_predictions.csv")
 
-# -------- 固定使用 BioBERT --------
+# -------- Fixed use of BioBERT --------
 BIOBERT_NAME = "dmis-lab/biobert-base-cased-v1.1"
 BATCH_SIZE   = 16
-MAX_LENGTH   = 256           # 如句子较长，可调 384/512
-SPLIT_LONG   = True          # 对很长行做简易分句，减少截断
+MAX_LENGTH   = 256           
+SPLIT_LONG   = True          
 
-# ---------------- Model (与你的训练结构一致：AutoModel + Linear + CRF) ----------------
+# ---------------- Model  ----------------
 class BertCRF(nn.Module):
     def __init__(self, model_name: str, num_tags: int, dropout: float = 0.1):
         super().__init__()
@@ -46,7 +38,7 @@ class BertCRF(nn.Module):
         emissions = self.emissions(input_ids, attention_mask)
         return self.crf.decode(emissions, mask=attention_mask.bool())  # List[List[int]]
 
-# ---------------- 工具：解析 label_mapping.pt（兼容多种结构） ----------------
+# ---------------- Parsing label_mapping.pt ----------------
 def _extract_int(x):
     if isinstance(x, numbers.Number):
         return int(x)
@@ -61,13 +53,13 @@ def _extract_int(x):
     raise ValueError(f"Cannot extract int from: {x}")
 
 def parse_label_map(lm_obj):
-    # 显式 label2id
+    
     if isinstance(lm_obj, dict):
         for key in ("label2id", "label2idx", "labels_to_ids"):
             if key in lm_obj and isinstance(lm_obj[key], dict):
                 l2i = {str(k): _extract_int(v) for k, v in lm_obj[key].items()}
                 return {int(v): str(k) for k, v in l2i.items()}
-        # 显式 id2label
+        
         for key in ("id2label", "idx2label", "ids_to_labels"):
             if key in lm_obj:
                 raw = lm_obj[key]
@@ -75,7 +67,7 @@ def parse_label_map(lm_obj):
                     return { _extract_int(k): str(v) for k, v in raw.items() }
                 if isinstance(raw, (list, tuple)):
                     return { i: str(v) for i, v in enumerate(raw) }
-        # 直接是 label2id / id2label
+        
         if all(isinstance(k, str) for k in lm_obj.keys()):
             l2i = {str(k): _extract_int(v) for k, v in lm_obj.items()}
             return {int(v): str(k) for k, v in l2i.items()}
@@ -87,19 +79,19 @@ def parse_label_map(lm_obj):
         return { i: str(v) for i, v in enumerate(lm_obj) }
     raise ValueError("Unrecognized label map structure")
 
-# ---------------- 简易分句，避免长段落被截断 ----------------
+# ---------------- sentence division to avoid truncation of long paragraphs ----------------
 _SENT_SPLIT = re.compile(r'(?<=[\.\!\?;；。！？”])\s+')
 def split_long_line(line, max_len=MAX_LENGTH//2):
     if not SPLIT_LONG:
         return [line]
-    # 先按标点断句，再按长度切块
+    # First break sentences by punctuation, then cut by length
     parts = [p.strip() for p in _SENT_SPLIT.split(line) if p.strip()]
     out = []
     for p in parts or [line]:
         if len(p) <= max_len:
             out.append(p)
         else:
-            # 过长时硬切
+            
             for i in range(0, len(p), max_len):
                 out.append(p[i:i+max_len])
     return out
@@ -138,7 +130,7 @@ def main():
     print("Input:", INPUT_TXT)
     print("Output:", OUTPUT_CSV)
 
-    # 基本检查
+    
     for p in [MODEL_PATH, LABEL_MAP, INPUT_TXT]:
         if not os.path.isfile(p):
             print(f"[ERROR] File not found: {p}")
@@ -148,14 +140,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Device:", device)
 
-    # 读取 label 映射
+    # Read label mapping
     lm = torch.load(LABEL_MAP, map_location="cpu")
     id2label = parse_label_map(lm)
     id2label = {int(k): str(v) for k, v in id2label.items()}
     num_tags = max(id2label.keys()) + 1
     print("Num tags:", num_tags, "Sample:", dict(list(id2label.items())[:5]))
 
-    # 模型 & 分词器
+    # Model & Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(BIOBERT_NAME, use_fast=True)
     model = BertCRF(BIOBERT_NAME, num_tags=num_tags)
     state = torch.load(MODEL_PATH, map_location="cpu")
@@ -166,11 +158,11 @@ def main():
     model.to(device).eval()
     print("Model loaded.")
 
-    # 读取 txt，每行可再分句
+    # Read txt, each line can be divided into sentences
     with open(INPUT_TXT, "r", encoding="utf-8") as f:
         raw_lines = [line.strip() for line in f if line.strip()]
     texts = []
-    parents = []  # 记录原始行编号
+    parents = []  # Record original line number
     for idx, line in enumerate(raw_lines):
         chunks = split_long_line(line)
         texts.extend(chunks)
@@ -199,7 +191,7 @@ def main():
         for b_idx, pred_ids in enumerate(pred_ids_batch):
             seq_offsets = offsets[b_idx].tolist()
             kept_offsets = [off for off in seq_offsets if not (off[0] == 0 and off[1] == 0)]
-            # 对齐长度
+            # Alignment length
             if len(pred_ids) > len(kept_offsets):
                 pred_ids = pred_ids[:len(kept_offsets)]
             elif len(pred_ids) < len(kept_offsets):
@@ -208,7 +200,7 @@ def main():
             sent_text = batch_texts[b_idx]
             spans = bio_to_spans(tags, kept_offsets, sent_text)
             for sp in spans:
-                sp["doc_id"] = int(parents[i + b_idx])  # 指向原始行号
+                sp["doc_id"] = int(parents[i + b_idx])  
                 results.append(sp)
 
     out_df = pd.DataFrame(results, columns=["doc_id","span","label","start_char","end_char","context"])

@@ -1,17 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-convert_gold.py  —— 二分类版本 (NoRelation / HasRelation)
-
-从多文件 JSONL(每行: {"text": "...", "spans":[...]}) 中抽取 (head, tail) 对，
-基于句子/触发词产出关系，并写出 re_pairs_gold.csv。
-
-主要变化：
-- 统一输出为二分类:NoRelation / HasRelation
-- 同句命中【因果/关联】触发词 → HasRelation;仅“检测/提到” → NoRelation
-- 相邻句(±WINDOW_SENT)若有因果/关联触发词 → HasRelation;否则可记为负例
-- 远距对不过度造负例（跳过）
-- 负例按 NEG_RATIO 相对正例下采样
-"""
 
 import os, json, re, glob, random
 from dataclasses import dataclass
@@ -19,17 +6,17 @@ from typing import List, Tuple, Dict, Any
 import pandas as pd
 
 # ========= 0) CONFIG =========
-INPUT_DIR   = r"C:\Users\Administrator\Desktop\Project\Resource\annotations_new"   # gold jsonl 文件夹
+INPUT_DIR   = r"C:\Users\Administrator\Desktop\Project\Resource\annotations_new"   
 OUTPUT_CSV  = r"C:\Users\Administrator\Desktop\Project\RE(3)\re_pairs_gold.csv"
 SEED        = 42
-NEG_RATIO   = 0.8     # 每个正样本最多保留 1.5 个 NoRelation
-WINDOW_SENT = 1        # 允许“相邻句”窗口大小（1=同句或相邻句）
+NEG_RATIO   = 0.8     
+WINDOW_SENT = 1        
 
-# 允许的实体类型
+#Allowed entity types
 HEAD_TYPES  = {"GENE", "VARIANT", "GENE_VARIANT"}
 TAIL_TYPES  = {"HPO_TERM"}
 
-# 触发词（全部小写）
+# triggers
 CAUSES_TRIGGERS = [
     r"caused by", r"due to", r"result(?:ed)? from", r"attribut(?:e|ed) to",
     r"pathogenic variant", r"deleterious variant", r"loss[- ]of[- ]function variant",
@@ -44,7 +31,7 @@ ASSOC_TRIGGERS = [
     r"the primary symptoms (were|was)", r"suffered from", r"complained of",
     r"with (a history of|evidence of)"
 ]
-# 仅检测/提及（强排除）
+# Detect/mention only (strong exclusion)
 MENTION_ONLY = [
     r"analysis of .* gene (was|were) performed",
     r"sequencing of .* gene (was|were) performed",
@@ -56,7 +43,7 @@ random.seed(SEED)
 
 # ========= 1) Utilities =========
 def sent_tokenize(text: str) -> List[Tuple[int,int,str]]:
-    """简单分句：按 . ? ! ; 和换行切，返回 (start,end,sent_text) 列表"""
+    """Simple clause: split by . ? ! ; and line break, return a list of (start, end, sent_text)"""
     spans, start = [], 0
     for m in re.finditer(r"[\.?!;]\s+|\n+", text):
         end = m.start()
@@ -82,7 +69,7 @@ def find_sent_index_covering(span: Tuple[int,int], sents) -> int:
     return -1
 
 def get_window_text(sents, idx_a: int, idx_b: int, window: int = 1) -> Tuple[int,int,str]:
-    """返回 (seg_start, seg_end, seg_text)"""
+    """Return (seg_start, seg_end, seg_text)"""
     lo = max(0, min(idx_a, idx_b) - window)
     hi = min(len(sents)-1, max(idx_a, idx_b) + window)
     seg_start = sents[lo][0]; seg_end = sents[hi][1]
@@ -105,7 +92,7 @@ def regex_any(patterns: List[str], text: str) -> bool:
     return any(re.search(p, t) for p in patterns)
 
 def decide_relation_binary(ctx_text: str) -> str:
-    """二分类判定：命中因果/关联且不是“仅提到/检测” → HasRelation"""
+    
     t = ctx_text.lower()
     if regex_any(MENTION_ONLY, t):
         return "NoRelation"
@@ -150,7 +137,7 @@ def process_jsonl(file_path: str) -> List[Dict[str, Any]]:
 
             for h in heads:
                 for t in tails:
-                    # 1) 同句优先
+                    # 1) Same sentence priority
                     same = find_sentence_containing((h.start,h.end),(t.start,t.end), sents)
                     if same is not None:
                         sent_start, sent_end, sent_text = same
@@ -169,13 +156,13 @@ def process_jsonl(file_path: str) -> List[Dict[str, Any]]:
                         })
                         continue
 
-                    # 2) 相邻句窗口（±WINDOW_SENT）
+                    # 2) Adjacent sentence window (±WINDOW_SENT)
                     hi = find_sent_index_covering((h.start,h.end), sents)
                     ti = find_sent_index_covering((t.start,t.end), sents)
                     if hi != -1 and ti != -1 and abs(hi - ti) <= WINDOW_SENT:
                         seg_s, seg_e, ctx_text = get_window_text(sents, hi, ti, window=0)
                         rel = decide_relation_binary(ctx_text)
-                        # 用 head 所在句做可视化（简单安全）
+                        
                         vis_start, _, vis_text = sents[hi]
                         text_marked = insert_markers(vis_text, vis_start,
                                                      (h.start,h.end,h.text),
@@ -191,8 +178,7 @@ def process_jsonl(file_path: str) -> List[Dict[str, Any]]:
                         })
                         continue
 
-                    # 3) 远距：跳过（避免噪声负例过多）
-                    # 如需更激进的负例，可在此处构造 NoRelation，但建议保持为跳过。
+                    
     return rows
 
 def build_dataset(input_dir: str) -> pd.DataFrame:
@@ -204,10 +190,10 @@ def build_dataset(input_dir: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # 仅保留合法头尾类型
+    # Only retain legal head and tail types
     df = df[(df["e1_type"].isin(HEAD_TYPES)) & (df["e2_type"].isin(TAIL_TYPES))].copy()
 
-    # 负采样：按正例数量限制 NoRelation 数量
+    # Negative sampling: limit the number of NoRelation by the number of positive examples
     pos_mask = df["relation"] == "HasRelation"
     no_mask  = df["relation"] == "NoRelation"
     n_pos, n_no = int(pos_mask.sum()), int(no_mask.sum())
@@ -215,7 +201,7 @@ def build_dataset(input_dir: str) -> pd.DataFrame:
         keep_no = df[no_mask].sample(n=int(n_pos * NEG_RATIO), random_state=SEED).index
         df = pd.concat([df[pos_mask], df.loc[keep_no]], axis=0).reset_index(drop=True)
 
-    # 去重
+    # Deduplication
     df = df.drop_duplicates(
         subset=["doc_id","e1_start","e1_end","e2_start","e2_end","relation","sentence"]
     ).reset_index(drop=True)
@@ -240,7 +226,7 @@ def main():
 if __name__ == "__main__":
     main()
 
-# -------- check (抽查与分布) --------
+# -------- check  --------
 csv_path = OUTPUT_CSV
 if os.path.exists(csv_path):
     _df = pd.read_csv(csv_path)

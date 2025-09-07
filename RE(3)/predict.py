@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-# predict_bin.py —— 从 jsonl 推理，输出预测 CSV（NoRelation/HasRelation）
+# predict_bin.py - inference from jsonl, output prediction CSV (NoRelation/HasRelation)
 import re, json
 from pathlib import Path
 import numpy as np
@@ -8,13 +7,13 @@ import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 BASE = Path(__file__).resolve().parent
-MODEL_DIR = BASE / "re_best_model_bin_mix"   # 换成你的模型目录
-INPUT_JSONL = BASE / "silver.jsonl"      # 待推理 jsonl
+MODEL_DIR = BASE / "re_best_model_bin_mix"   
+INPUT_JSONL = BASE / "silver.jsonl"      
 OUT_CSV     = BASE / "pred_pairs.csv"
 
 MAX_LEN = 256
 BATCH = 64
-THR_POS = 0.55        # 若你做过阈值扫描，用最佳阈值替换
+THR_POS = 0.55        
 NR_BIAS_FALLBACK = 0.80
 HEADS = {"GENE","VARIANT","GENE_VARIANT"}; TAIL="HPO_TERM"
 
@@ -78,14 +77,14 @@ def collect(jsonl):
     return pd.DataFrame(rows)
 
 def main():
-    assert MODEL_DIR.exists(), f"模型不存在: {MODEL_DIR}"
+    assert MODEL_DIR.exists(), f"Model does not exist: {MODEL_DIR}"
     df=collect(INPUT_JSONL)
     if df.empty: 
-        print("没有抽取到候选对"); return
+        print("No candidate pairs were extracted"); return
     tok=AutoTokenizer.from_pretrained(str(MODEL_DIR), use_fast=True)
     tok.add_special_tokens({"additional_special_tokens":["[E1]","[/E1]","[E2]","[/E2]"]})
     mdl=AutoModelForSequenceClassification.from_pretrained(str(MODEL_DIR)).eval().to("cpu")
-    # NoRelation 偏置
+    # NoRelation bias
     bias=NR_BIAS_FALLBACK
     bp=MODEL_DIR/"nr_bias.json"
     if bp.exists():
